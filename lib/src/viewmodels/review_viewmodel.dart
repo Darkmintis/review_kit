@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import '../models/review_config.dart';
 import '../models/review_eligibility.dart';
 import '../models/review_statistics.dart';
@@ -48,25 +48,23 @@ enum ReviewKitCallback {
 /// Implements the MVVM pattern as a singleton [ChangeNotifier]. Coordinates
 /// between the configuration, rule engine, storage, and native review API.
 ///
+/// Automatically tracks foreground usage time via [WidgetsBindingObserver]
+/// when [ReviewConfig.autoTrackUsageTime] is enabled — no manual session
+/// management required.
+///
 /// ## Usage
 ///
 /// ```dart
-/// // 1. Initialize with config, rules, and optional custom storage
 /// await ReviewViewModel.instance.init(
 ///   config: myConfig,
-///   rules: [LaunchRule(), TimeRule(), ...],
-///   appVersion: '1.2.3',              // optional version tracking
-///   storage: MyCustomStorage(),       // optional custom storage
+///   rules: [LaunchRule(), TimeRule()],
+///   appVersion: '1.2.3',
 /// );
 ///
-/// // 2. Track events and sessions
 /// ReviewViewModel.instance.trackEvent('purchase_made');
-/// ReviewViewModel.instance.startSession();
-///
-/// // 3. Request a review (only if all rules pass)
 /// await ReviewViewModel.instance.maybeRequestReview();
 /// ```
-class ReviewViewModel extends ChangeNotifier {
+class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
   static final ReviewViewModel _instance = ReviewViewModel._internal();
 
   /// The singleton instance of ReviewViewModel.
@@ -82,9 +80,16 @@ class ReviewViewModel extends ChangeNotifier {
   ReviewEligibility? _lastEligibility;
   ReviewReason? _lastReason;
   bool _isRequesting = false;
+
+  // Session tracking (manual start/end)
   bool _sessionActive = false;
   Timer? _sessionTimer;
   int _sessionElapsed = 0;
+
+  // Foreground tracking (automatic via WidgetsBindingObserver)
+  Timer? _foregroundTimer;
+  int _foregroundElapsed = 0;
+  bool _isInForeground = false;
 
   final Map<ReviewKitCallback, List<void Function(dynamic)>> _callbacks = {};
 
@@ -121,10 +126,17 @@ class ReviewViewModel extends ChangeNotifier {
   ///   When provided, ReviewKit detects version changes and records the
   ///   update date for time-based eligibility rules.
   ///
+  /// When [ReviewConfig.autoTrackUsageTime] is enabled, automatically
+  /// starts tracking foreground time — the review prompt can be shown
+  /// after the user has spent a configured amount of time in the app.
+  ///
   /// ```dart
   /// await ReviewViewModel.instance.init(
-  ///   config: ReviewConfig.builder().launches(min: 5).build(),
-  ///   rules: [LaunchRule(), CooldownRule()],
+  ///   config: ReviewConfig.builder()
+  ///     .usageTime(600)   // require 10 minutes of usage
+  ///     .autoTrack(usageTime: true)
+  ///     .build(),
+  ///   rules: [SessionRule()],
   ///   appVersion: '1.0.0',
   /// );
   /// ```
@@ -147,6 +159,8 @@ class ReviewViewModel extends ChangeNotifier {
     _config = config;
     _ruleEngine = RuleEngine(_storage, rules);
 
+    WidgetsBinding.instance.addObserver(this);
+
     _initialized = true;
 
     if (appVersion != null) {
@@ -155,6 +169,10 @@ class ReviewViewModel extends ChangeNotifier {
 
     if (_config.autoTrackLaunches == true) {
       await _trackLaunch();
+    }
+
+    if (_config.autoTrackUsageTime == true) {
+      _startForegroundTracking();
     }
   }
 
@@ -192,6 +210,43 @@ class ReviewViewModel extends ChangeNotifier {
     }
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_config.autoTrackUsageTime != true) return;
+
+    if (state == AppLifecycleState.resumed) {
+      _isInForeground = true;
+      _startForegroundTimer();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _isInForeground = false;
+      _flushForegroundTime();
+    }
+  }
+
+  void _startForegroundTracking() {
+    _isInForeground = true;
+    _startForegroundTimer();
+  }
+
+  void _startForegroundTimer() {
+    _foregroundTimer?.cancel();
+    _foregroundTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _foregroundElapsed++;
+    });
+  }
+
+  void _flushForegroundTime() {
+    _foregroundTimer?.cancel();
+    _foregroundTimer = null;
+
+    if (_foregroundElapsed > 0) {
+      final total = _storage.getUsageDuration();
+      _storage.setUsageDuration(total + _foregroundElapsed);
+      _foregroundElapsed = 0;
+    }
+  }
+
   Future<void> _checkAppUpdate(String currentVersion) async {
     final lastVersion = _storage.getLastAppVersion();
     if (lastVersion != null && lastVersion != currentVersion) {
@@ -219,6 +274,10 @@ class ReviewViewModel extends ChangeNotifier {
   /// If [ReviewConfig.autoTrackSessions] is enabled, increments the session
   /// counter. If [ReviewConfig.autoTrackUsageTime] is enabled, begins tracking
   /// elapsed seconds until [endSession] is called.
+  ///
+  /// Note: When [autoTrackUsageTime] is enabled, foreground time is also
+  /// tracked automatically via [WidgetsBindingObserver] — both sources
+  /// contribute to the total usage duration.
   Future<void> startSession() async {
     if (!_initialized || _sessionActive) return;
 
@@ -231,7 +290,7 @@ class ReviewViewModel extends ChangeNotifier {
       notifyListeners();
     }
 
-    if (_config.autoTrackUsageTime == true) {
+    if (_config.autoTrackUsageTime == true && !_isInForeground) {
       _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         _sessionElapsed++;
       });
@@ -305,6 +364,14 @@ class ReviewViewModel extends ChangeNotifier {
   ///
   /// This is the primary way to surface diagnostic information to developers
   /// about why a review was or was not requested.
+  ///
+  /// Example output:
+  /// ```
+  /// ❌ Not Eligible
+  /// Reason:
+  /// • Usage time: 3m / 10m
+  /// • App launches: 2/5
+  /// ```
   ReviewReason getEligibilityReason() {
     _lastReason = _ruleEngine.getEligibilityReason(_config);
     notifyListeners();
@@ -430,6 +497,7 @@ class ReviewViewModel extends ChangeNotifier {
 
   /// Reset all counters, events, dates, and cooldowns.
   Future<void> resetAll() async {
+    _flushForegroundTime();
     await _storage.resetAll();
     _lastEligibility = null;
     _lastReason = null;
@@ -474,15 +542,23 @@ class ReviewViewModel extends ChangeNotifier {
   ///
   /// [config] — the new [ReviewConfig]. [rules] — optional new rule list.
   void updateConfig(ReviewConfig config, {List<ReviewRule>? rules}) {
+    final wasTracking = _config.autoTrackUsageTime == true;
     _config = config;
     if (rules != null) {
       _ruleEngine = RuleEngine(_storage, rules);
+    }
+    if (wasTracking && config.autoTrackUsageTime != true) {
+      _flushForegroundTime();
+    } else if (!wasTracking && config.autoTrackUsageTime == true) {
+      _startForegroundTracking();
     }
     notifyListeners();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _flushForegroundTime();
     _sessionTimer?.cancel();
     super.dispose();
   }
