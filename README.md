@@ -1,38 +1,41 @@
-# ReviewKit
+# ReviewKit (`in_app_review_kit`)
 
-[![Flutter](https://img.shields.io/badge/Flutter-3.10%2B-blue)](https://flutter.dev)
+[![pub package](https://img.shields.io/pub/v/in_app_review_kit.svg)](https://pub.dev/packages/in_app_review_kit)
+[![Flutter](https://img.shields.io/badge/Flutter-3.16%2B-blue)](https://flutter.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A complete Flutter solution for intelligently managing **Google Play** and **App Store** in-app reviews. Built with **MVVM architecture** and **zero hardcoded defaults** — you control every condition.
+Intelligently manage **Google Play** and **App Store** in-app reviews in Flutter.
+Fluent eligibility rules, event tracking, cooldowns, and a debug screen — with
+**zero hardcoded defaults**. You control every condition.
+
+Published on pub.dev as [`in_app_review_kit`](https://pub.dev/packages/in_app_review_kit).
+
+## Why ReviewKit?
+
+Raw `requestReview()` calls get ignored by the OS when overused, annoy users,
+and offer no insight into *why* a prompt was skipped. ReviewKit adds a small
+eligibility layer so you prompt at the right moment — and can see exactly why
+not when you don't.
 
 ## Features
 
-- **Native Review API** — Google Play & App Store integration with graceful fallbacks
-- **Fluent Builder Config** — Explicitly set every condition via `ReviewConfig.builder()`. Nothing is enforced unless you set it
-- **Smart Eligibility Engine** — Launch count, time, sessions, events, and cooldown rules
-- **Custom Rule Callbacks** — Add your own eligibility conditions inline with `CustomReviewRule`
-- **Review Reason Logging** — See exactly why `maybeRequestReview()` returned `false`
-- **Event Tracking** — Built-in persistent event system with per-event thresholds
-- **Automatic Counters** — Opt-in tracking for launches, sessions, and usage time
-- **Configurable Cooldowns** — Prevent over-requesting after reviews and store redirects
-- **Debug Mode** — Full diagnostics screen (`ReviewDebugScreen`)
-- **Statistics API** — Read all counters, dates, and eligibility state
-- **Reset Utilities** — Reset counters for testing
-- **Privacy-First** — Fully offline, no analytics, no cloud, no network requests
-- **MVVM Architecture** — Clean models, services, rules, and ViewModel separation
-- **Pluggable Storage** — Default `SharedPreferencesStorage` or bring your own via `ReviewStorage` interface
-- **Ephemeral Mode** — Use `InMemoryStorage` for testing or lightweight usage
+- **Native Review API** — Google Play & App Store via `in_app_review`
+- **Fluent builder** — Only conditions you set are enforced
+- **Smart rules** — Launches, time, sessions, events, cooldowns
+- **Custom rules** — Inline `CustomReviewRule` callbacks
+- **Clear diagnostics** — Know why `maybeRequestReview()` returned `false`
+- **Event tracking** — Persistent per-event thresholds
+- **Auto tracking** — Optional launches, sessions, and usage time
+- **Debug screen** — `ReviewDebugScreen` for development
+- **Pluggable storage** — `SharedPreferences` (default) or `InMemoryStorage`
+- **Privacy-first** — Fully offline, no analytics, no network
 
 ## Installation
-
-Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
   in_app_review_kit: ^1.0.0
 ```
-
-Then run:
 
 ```bash
 flutter pub get
@@ -40,49 +43,48 @@ flutter pub get
 
 ## Quick Start
 
+The shortest useful setup — omit `rules` and all built-in rules are applied
+automatically (unset config fields are ignored):
+
 ```dart
 import 'package:in_app_review_kit/in_app_review_kit.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 1. Build your config — only what you set is enforced
-  final config = ReviewConfig.builder()
-      .launches(min: 5)
-      .daysSinceInstall(7)
-      .sessions(3)
-      .cooldown(daysAfterReview: 60, onePerSession: true)
-      .autoTrack(launches: true, sessions: true, usageTime: true)
-      .build();
-
-  // 2. Choose your rules + add custom ones
-  final rules = [
-    LaunchRule(),
-    TimeRule(),
-    SessionRule(),
-    CooldownRule(),
-    CustomReviewRule(
-      name: 'User Opt-In',
-      onEvaluate: (_, __) => userHasOptedIn,
-    ),
-  ];
-
-  // 3. Initialize (pass appVersion for update detection)
   await ReviewViewModel.instance.init(
-    config: config,
-    rules: rules,
+    config: ReviewConfig.builder()
+        .launches(min: 5)
+        .daysSinceInstall(7)
+        .sessions(3)
+        .cooldown(daysAfterReview: 60, onePerSession: true)
+        .autoTrack(launches: true, sessions: true, usageTime: true)
+        .build(),
     appVersion: '1.0.0',
   );
 
-  // 4. Register callbacks
-  ReviewViewModel.instance.on(
-    callback: ReviewKitCallback.ineligible,
-    handler: (reason) => print('Not eligible: $reason'),
-  );
-
-  // 5. Request review (only if all rules pass)
-  await ReviewViewModel.instance.maybeRequestReview();
+  runApp(const MyApp());
 }
+
+// Later, at a natural moment (e.g. after a success screen):
+await ReviewViewModel.instance.maybeRequestReview();
+```
+
+### With custom rules
+
+```dart
+await ReviewViewModel.instance.init(
+  config: config,
+  rules: [
+    ...defaultReviewRules(),
+    CustomReviewRule(
+      name: 'User Opt-In',
+      onEvaluate: (_, __) => userHasOptedIn,
+      onFailureReason: (_, __) => 'User has not opted in',
+    ),
+  ],
+  appVersion: '1.0.0',
+);
 ```
 
 ## Configuration Builder
@@ -91,52 +93,42 @@ Every condition is **opt-in**. Only what you explicitly set is enforced.
 
 ```dart
 final config = ReviewConfig.builder()
-    .launches(min: 3, max: 10)        // app launch bounds
-    .daysSinceInstall(7)               // min days since install
-    .daysSinceFirstLaunch(3)           // min days since first open
-    .daysSinceLastReview(30)           // min days between reviews
-    .daysSinceLastUpdate(1)            // min days after update
-    .sessions(3)                       // min sessions
-    .usageTime(600)                    // min total usage (seconds)
-    .cooldown(                         // cooldown settings
+    .launches(min: 3, max: 10)
+    .daysSinceInstall(7)
+    .daysSinceFirstLaunch(3)
+    .daysSinceLastReview(30)
+    .daysSinceLastUpdate(1)
+    .sessions(3)
+    .usageTime(600) // seconds
+    .cooldown(
       daysAfterReview: 60,
       daysAfterStoreRedirect: 7,
       onePerSession: true,
     )
-    .event('purchase_made', threshold: 3)   // per-event thresholds
+    .event('purchase_made', threshold: 3)
     .autoTrack(launches: true, sessions: true, usageTime: true)
-    .debug(true)
+    .debug(true) // verbose debugPrint logs
     .build();
 ```
 
 ## Built-in Rules
 
-| Rule | Class | What it checks |
-|------|-------|----------------|
+| Rule | Class | Checks |
+|------|-------|--------|
 | Launch Count | `LaunchRule` | `minLaunches` / `maxLaunches` |
-| Time Conditions | `TimeRule` | Days since install, first launch, last review, last update |
-| Session Conditions | `SessionRule` | Minimum sessions and total usage time |
-| Custom Events | `EventRule` | Minimum counts for named events |
-| Cooldown | `CooldownRule` | Post-review and post-redirect cooldown periods |
+| Time | `TimeRule` | Days since install, first launch, last review, last update |
+| Session | `SessionRule` | Min sessions and total usage time |
+| Events | `EventRule` | Named event thresholds |
+| Cooldown | `CooldownRule` | Post-review / post-redirect cooldowns, one-per-session |
 
-## Custom Rules
-
-Use `CustomReviewRule` for app-specific conditions:
-
-```dart
-CustomReviewRule(
-  name: 'Network Check',
-  onEvaluate: (_, __) => connectivity.isConnected,
-  onFailureReason: (_, __) => 'No network connection',
-)
-```
+When `rules` is omitted, all five are registered via `defaultReviewRules()`.
 
 ## Callbacks
 
 ```dart
 ReviewViewModel.instance.on(
   callback: ReviewKitCallback.reviewRequested,
-  handler: (_) => print('Review shown'),
+  handler: (_) => print('Review API invoked'),
 );
 
 ReviewViewModel.instance.on(
@@ -146,28 +138,25 @@ ReviewViewModel.instance.on(
 
 ReviewViewModel.instance.on(
   callback: ReviewKitCallback.reviewUnavailable,
-  handler: (_) => print('API not available'),
+  handler: (_) => print('Native API not available'),
 );
 ```
 
-## Event Tracking
+> **Note:** `reviewRequested` / a `true` return from `maybeRequestReview()` means
+> the OS API was called. Google Play and the App Store may still suppress the
+> dialog due to quotas.
+
+## Events & Sessions
 
 ```dart
 await ReviewViewModel.instance.trackEvent('purchase_made');
-final events = ReviewViewModel.instance.getEvents();
-```
 
-## Sessions
-
-```dart
 await ReviewViewModel.instance.startSession();
 // ... user uses the app ...
 await ReviewViewModel.instance.endSession();
 ```
 
 ## Debug Screen
-
-Navigate to the built-in debug screen during development:
 
 ```dart
 Navigator.push(
@@ -176,89 +165,79 @@ Navigator.push(
 );
 ```
 
-Shows eligibility status, all counters, events, dates, and action buttons for resets.
-
-## Statistics
+## Statistics & Resets
 
 ```dart
 final stats = ReviewViewModel.instance.getStatistics();
-print('Launches: ${stats.launchCount}');
-print('Sessions: ${stats.sessionCount}');
 print('Eligible: ${stats.isEligible}');
-```
 
-## Resets
-
-```dart
 await ReviewViewModel.instance.resetAll();
-await ReviewViewModel.instance.resetLaunches();
-await ReviewViewModel.instance.resetSessions();
-await ReviewViewModel.instance.resetEvents();
 await ReviewViewModel.instance.resetCooldowns();
 ```
 
 ## Storage
 
-ReviewKit uses a pluggable storage architecture via the `ReviewStorage` interface.
+**`SharedPreferencesStorage`** (default) — persists across restarts.
 
-**`SharedPreferencesStorage`** (default) — Persistent on-device storage. Data survives app restarts. Recommended for production.
-
-```dart
-// Default — no configuration needed
-await ReviewViewModel.instance.init(config: config, rules: rules);
-```
-
-**`InMemoryStorage`** — Ephemeral storage. All data is lost when the process terminates. Great for testing or when you have your own persistence layer.
+**`InMemoryStorage`** — ephemeral; great for tests:
 
 ```dart
 await ReviewViewModel.instance.init(
   config: config,
-  rules: rules,
   storage: InMemoryStorage(),
 );
 ```
 
-**Custom storage** — Implement `ReviewStorage` for a completely custom backend.
+Implement `ReviewStorage` for a custom backend.
+
+## Platform Support
+
+| Platform | In-app review |
+|----------|----------------|
+| Android (API 21+) | Yes |
+| iOS (10.3+) | Yes |
+| Web / Desktop | Unsupported (safe to import; APIs no-op as unavailable) |
+
+On iOS, pass your numeric App Store ID when opening the listing:
 
 ```dart
-class MyStorage implements ReviewStorage {
-  // implement all methods
-}
+await ReviewViewModel.instance.openStoreListing(appStoreId: '123456789');
 ```
 
-## Dependencies
+> **Note:** `onePerSession` is enforced in memory only and resets each app start.
+> A `true` return from `maybeRequestReview()` means the OS API was called; the
+> store may still suppress the dialog due to platform quotas.
 
-Minimal footprint — only what's needed:
-- `in_app_review` — Native Google Play & App Store review API
-- `shared_preferences` — Local persistent storage (swappable)
-- **Zero analytics, zero network, zero cloud**
+## Example
+
+See the [`example/`](example/) app for a full interactive demo.
 
 ## Architecture
 
 ```
 lib/
-├── in_app_review_kit.dart          # Barrel exports
-├── src/
-│   ├── models/                     # Data models (immutable config, eligibility, etc.)
-│   ├── services/                   # Platform detection, storage, native API wrapper
-│   ├── rules/                      # Eligibility rules (abstract + built-in + custom)
-│   ├── viewmodels/                 # ReviewViewModel (ChangeNotifier singleton)
-│   └── views/                      # ReviewDebugScreen
+├── in_app_review_kit.dart          # Public barrel — import only this
+└── src/
+    ├── models/                     # Config, eligibility, stats, callbacks
+    ├── rules/                      # ReviewRule + built-ins + RuleEngine
+    ├── services/                   # Storage, platform, native API, UsageTracker
+    ├── viewmodels/                 # ReviewViewModel (orchestrator)
+    └── views/                      # ReviewDebugScreen
 ```
+
+Internal helpers (`CallbackDispatcher`, `UsageTracker`, `RuleEngine`,
+`NativeReviewService`) stay in `src/` and are not part of the public API.
 
 ## Privacy
 
-- ✅ Fully offline
-- ✅ No analytics or telemetry
-- ✅ No cloud storage
-- ✅ No network requests
-- ✅ No user accounts
-- ✅ Local storage only (SharedPreferences)
+- Fully offline
+- No analytics or telemetry
+- No network requests from this package
+- Local storage only (`SharedPreferences` by default)
 
-## Platform Support
+## Contributing
 
-- Android (Google Play Store, API 21+)
-- iOS (App Store, iOS 10.3+)
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

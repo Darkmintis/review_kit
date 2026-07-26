@@ -2,22 +2,24 @@
 
 ### Initial Release
 
-ReviewKit is a complete Flutter solution for intelligently managing Google Play and App Store in-app reviews. Built with MVVM architecture and zero hardcoded defaults — you control everything.
+ReviewKit (`in_app_review_kit`) — intelligently manage Google Play and App Store
+in-app reviews with fluent eligibility rules and zero hardcoded defaults.
 
 #### Features
 
-- **Native Review API** — Google Play & App Store integration with graceful error handling
-- **Fluent Builder Config** — Explicitly set every condition via `ReviewConfig.builder()`. Nothing is enforced unless you set it
-- **Smart Eligibility Engine** — Launch count, time conditions, session requirements, event thresholds, and cooldown rules
-- **Custom Rule Callbacks** — Add your own eligibility conditions inline with `CustomReviewRule`
-- **Review Reason Logging** — See exactly why `maybeRequestReview()` returned false
-- **Event Tracking** — Built-in persistent event system with per-event thresholds
-- **Automatic Counters** — Opt-in tracking of launches, sessions, and usage time
-- **Configurable Cooldowns** — Prevent over-requesting with post-review and post-redirect cooldowns
-- **Debug Mode** — Diagnostics screen (`ReviewDebugScreen`) showing all state
-- **Statistics API** — Full read access to counters, dates, and eligibility
-- **Reset Utilities** — Reset all or individual counters for testing
-- **Pluggable Storage** — `ReviewStorage` interface with `SharedPreferencesStorage` (default), `InMemoryStorage`, or custom implementations
-- **Privacy-First** — Fully offline. No analytics, no cloud storage, no network requests. Zero unnecessary dependencies
-- **MVVM Architecture** — Clean separation of models, services, rules, and ViewModel
-- **Platform Support** — Android and iOS only
+- Native review API integration (Google Play & App Store)
+- Fluent `ReviewConfig.builder()` — only set conditions are enforced
+- Built-in rules: launches, time, sessions, events, cooldowns
+- `defaultReviewRules()` when you omit the `rules` argument
+- Custom inline rules via `CustomReviewRule`
+- Diagnostics via `getEligibilityReason()` / callbacks
+- Event tracking, optional auto launch/session/usage tracking
+- `ReviewDebugScreen` and statistics API
+- Pluggable storage (`SharedPreferencesStorage`, `InMemoryStorage`)
+- Privacy-first: offline, no analytics
+
+#### Notes
+
+- `oneRequestPerSession` is **in-memory only** (resets on each app start)
+- `maybeRequestReview()` returning `true` means the OS API was invoked; the
+  store may still suppress the dialog due to quotas
