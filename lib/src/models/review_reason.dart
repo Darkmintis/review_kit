@@ -43,10 +43,13 @@ class ReviewReason {
   @override
   String toString() {
     final header = eligible ? '✅ Eligible' : '❌ Not Eligible';
-    final buffer = StringBuffer('$header\nReason:\n');
+    if (eligible || details.isEmpty) {
+      return '$header\n$summary';
+    }
+    final buffer = StringBuffer('$header\n$summary\n');
     for (final detail in details) {
       buffer.writeln('• $detail');
     }
-    return buffer.toString();
+    return buffer.toString().trimRight();
   }
 }

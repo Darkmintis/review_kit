@@ -7,6 +7,11 @@ import 'review_rule.dart';
 /// Checks minimum days since install, first launch, last review request,
 /// and last app update. Each condition is only evaluated if the corresponding
 /// field is set in [ReviewConfig].
+///
+/// Missing dates for **required** thresholds (install / first launch) cause
+/// the rule to fail — the condition cannot be verified yet. Missing dates for
+/// last-review / last-update mean the event has never occurred, so those
+/// checks pass.
 class TimeRule extends ReviewRule {
   @override
   String get name => 'Time Conditions';
@@ -17,22 +22,21 @@ class TimeRule extends ReviewRule {
 
     if (config.minDaysSinceInstall != null) {
       final installDate = storage.getInstallDate();
-      if (installDate != null) {
-        final daysSince = now.difference(installDate).inDays;
-        if (daysSince < config.minDaysSinceInstall!) return false;
-      }
+      if (installDate == null) return false;
+      final daysSince = now.difference(installDate).inDays;
+      if (daysSince < config.minDaysSinceInstall!) return false;
     }
 
     if (config.minDaysSinceFirstLaunch != null) {
       final firstLaunch = storage.getFirstLaunchDate();
-      if (firstLaunch != null) {
-        final daysSince = now.difference(firstLaunch).inDays;
-        if (daysSince < config.minDaysSinceFirstLaunch!) return false;
-      }
+      if (firstLaunch == null) return false;
+      final daysSince = now.difference(firstLaunch).inDays;
+      if (daysSince < config.minDaysSinceFirstLaunch!) return false;
     }
 
     if (config.minDaysSinceLastReview != null) {
       final lastReview = storage.getLastReviewRequestDate();
+      // Never reviewed → condition is satisfied.
       if (lastReview != null) {
         final daysSince = now.difference(lastReview).inDays;
         if (daysSince < config.minDaysSinceLastReview!) return false;
@@ -41,6 +45,7 @@ class TimeRule extends ReviewRule {
 
     if (config.minDaysSinceLastUpdate != null) {
       final lastUpdate = storage.getLastAppUpdateDate();
+      // No update recorded → condition is satisfied.
       if (lastUpdate != null) {
         final daysSince = now.difference(lastUpdate).inDays;
         if (daysSince < config.minDaysSinceLastUpdate!) return false;
@@ -57,7 +62,10 @@ class TimeRule extends ReviewRule {
 
     if (config.minDaysSinceInstall != null) {
       final installDate = storage.getInstallDate();
-      if (installDate != null) {
+      if (installDate == null) {
+        reasons.add(
+            'Days since install: unknown (install date not set)/${config.minDaysSinceInstall}');
+      } else {
         final daysSince = now.difference(installDate).inDays;
         if (daysSince < config.minDaysSinceInstall!) {
           reasons.add(
@@ -68,7 +76,10 @@ class TimeRule extends ReviewRule {
 
     if (config.minDaysSinceFirstLaunch != null) {
       final firstLaunch = storage.getFirstLaunchDate();
-      if (firstLaunch != null) {
+      if (firstLaunch == null) {
+        reasons.add(
+            'Days since first launch: unknown (first launch not set)/${config.minDaysSinceFirstLaunch}');
+      } else {
         final daysSince = now.difference(firstLaunch).inDays;
         if (daysSince < config.minDaysSinceFirstLaunch!) {
           reasons.add(

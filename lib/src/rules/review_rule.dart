@@ -60,14 +60,15 @@ class CustomReviewRule extends ReviewRule {
   ///
   /// [name] — a descriptive name for diagnostics.
   /// [onEvaluate] — the condition to check.
-  /// [reason] — optional failure reason callback. Defaults to
+  /// [onFailureReason] — optional failure reason callback. Defaults to
   /// `'Custom rule "$name" failed'`.
   CustomReviewRule({
     required this.name,
     required this.onEvaluate,
-    String Function(ReviewConfig config, ReviewStorage storage)? reason,
-  }) : onFailureReason =
-            reason ?? ((config, storage) => 'Custom rule "$name" failed');
+    String Function(ReviewConfig config, ReviewStorage storage)?
+        onFailureReason,
+  }) : onFailureReason = onFailureReason ??
+            ((config, storage) => 'Custom rule "$name" failed');
 
   @override
   bool evaluate(ReviewConfig config, ReviewStorage storage) =>
