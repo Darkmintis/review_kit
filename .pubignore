@@ -1,0 +1,12 @@
+# Files to exclude from the pub.dev package archive.
+.github/
+CONTRIBUTING.md
+**/ephemeral/
+**/.idea/
+**/*.iml
+**/local.properties
+**/Generated.xcconfig
+**/GeneratedPluginRegistrant.*
+**/flutter_export_environment.sh
+**/flutter_native_integration.env
+**/flutter_lldb*
