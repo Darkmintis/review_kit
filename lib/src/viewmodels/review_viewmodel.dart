@@ -1,67 +1,38 @@
-import 'dart:async';
 import 'package:flutter/widgets.dart';
+
 import '../models/review_config.dart';
 import '../models/review_eligibility.dart';
-import '../models/review_statistics.dart';
+import '../models/review_kit_callback.dart';
 import '../models/review_reason.dart';
-import '../services/review_storage.dart';
-import '../services/shared_preferences_storage.dart';
-import '../services/platform_service.dart';
-import '../services/native_review_service.dart';
+import '../models/review_statistics.dart';
+import '../rules/default_rules.dart';
 import '../rules/review_rule.dart';
 import '../rules/rule_engine.dart';
-
-/// Callback events emitted by [ReviewViewModel].
+import '../services/callback_dispatcher.dart';
+import '../services/native_review_service.dart';
+import '../services/platform_service.dart';
+import '../services/review_storage.dart';
+import '../services/shared_preferences_storage.dart';
+import '../services/usage_tracker.dart';
+/// The central orchestrator for ReviewKit.
 ///
-/// Register handlers via [ReviewViewModel.on] to react to review lifecycle
-/// events.
+/// Singleton [ChangeNotifier] that wires config, [RuleEngine], storage, and
+/// the native review API. Usage timing is delegated to [UsageTracker];
+/// callbacks to [CallbackDispatcher].
 ///
-/// ```dart
-/// ReviewViewModel.instance.on(
-///   callback: ReviewKitCallback.reviewRequested,
-///   handler: (_) => print('Review shown!'),
-/// );
-/// ```
-enum ReviewKitCallback {
-  /// A review request was successfully shown to the user.
-  reviewRequested,
-
-  /// The native review API is not available on this device.
-  reviewUnavailable,
-
-  /// The review request was skipped (ineligible or unavailable).
-  reviewSkipped,
-
-  /// The user is eligible for a review request.
-  eligible,
-
-  /// The user is not eligible for a review request.
-  /// The handler receives a [ReviewReason] with details.
-  ineligible,
-
-  /// The user was redirected to the store listing.
-  storeOpened,
-}
-
-/// The central ViewModel for the ReviewKit package.
-///
-/// Implements the MVVM pattern as a singleton [ChangeNotifier]. Coordinates
-/// between the configuration, rule engine, storage, and native review API.
-///
-/// Automatically tracks foreground usage time via [WidgetsBindingObserver]
-/// when [ReviewConfig.autoTrackUsageTime] is enabled — no manual session
-/// management required.
-///
-/// ## Usage
+/// ## Quick start
 ///
 /// ```dart
 /// await ReviewViewModel.instance.init(
-///   config: myConfig,
-///   rules: [LaunchRule(), TimeRule()],
+///   config: ReviewConfig.builder()
+///       .launches(min: 5)
+///       .daysSinceInstall(7)
+///       .cooldown(daysAfterReview: 60, onePerSession: true)
+///       .autoTrack(launches: true, sessions: true, usageTime: true)
+///       .build(),
 ///   appVersion: '1.2.3',
 /// );
 ///
-/// ReviewViewModel.instance.trackEvent('purchase_made');
 /// await ReviewViewModel.instance.maybeRequestReview();
 /// ```
 class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
@@ -70,28 +41,19 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
   /// The singleton instance of ReviewViewModel.
   static ReviewViewModel get instance => _instance;
 
-  late final ReviewStorage _storage;
+  late ReviewStorage _storage;
   final PlatformService _platformService = PlatformService();
   final NativeReviewService _nativeService = NativeReviewService();
-  late final RuleEngine _ruleEngine;
+  final CallbackDispatcher _callbacks = CallbackDispatcher();
+
+  late RuleEngine _ruleEngine;
+  UsageTracker? _usageTracker;
 
   ReviewConfig _config = ReviewConfig.builder().build();
   bool _initialized = false;
   ReviewEligibility? _lastEligibility;
   ReviewReason? _lastReason;
   bool _isRequesting = false;
-
-  // Session tracking (manual start/end)
-  bool _sessionActive = false;
-  Timer? _sessionTimer;
-  int _sessionElapsed = 0;
-
-  // Foreground tracking (automatic via WidgetsBindingObserver)
-  Timer? _foregroundTimer;
-  int _foregroundElapsed = 0;
-  bool _isInForeground = false;
-
-  final Map<ReviewKitCallback, List<void Function(dynamic)>> _callbacks = {};
 
   /// The current [ReviewConfig].
   ReviewConfig get config => _config;
@@ -115,38 +77,22 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Initialize the ReviewKit engine.
   ///
-  /// Must be called once before using any other methods.
+  /// Must be called once before using any other methods. Subsequent calls are
+  /// ignored unless [force] is `true` (useful in tests).
   ///
-  /// [config] — your [ReviewConfig] built with [ReviewConfig.builder].
-  /// [rules] — explicit list of [ReviewRule] instances to evaluate.
-  /// [storage] — optional custom storage backend. Defaults to
-  ///   [SharedPreferencesStorage] for persistent on-device storage.
-  ///   Pass [InMemoryStorage] for ephemeral/testing usage.
-  /// [appVersion] — optional current app version string (e.g. `"1.2.3"`).
-  ///   When provided, ReviewKit detects version changes and records the
-  ///   update date for time-based eligibility rules.
-  ///
-  /// When [ReviewConfig.autoTrackUsageTime] is enabled, automatically
-  /// starts tracking foreground time — the review prompt can be shown
-  /// after the user has spent a configured amount of time in the app.
-  ///
-  /// ```dart
-  /// await ReviewViewModel.instance.init(
-  ///   config: ReviewConfig.builder()
-  ///     .usageTime(600)   // require 10 minutes of usage
-  ///     .autoTrack(usageTime: true)
-  ///     .build(),
-  ///   rules: [SessionRule()],
-  ///   appVersion: '1.0.0',
-  /// );
-  /// ```
+  /// When [rules] is omitted or empty, [defaultReviewRules] is used.
   Future<void> init({
     required ReviewConfig config,
-    List<ReviewRule> rules = const [],
+    List<ReviewRule>? rules,
     ReviewStorage? storage,
     String? appVersion,
+    bool force = false,
   }) async {
-    if (_initialized) return;
+    if (_initialized && !force) return;
+
+    if (_initialized && force) {
+      await _tearDown();
+    }
 
     if (storage != null) {
       _storage = storage;
@@ -156,11 +102,16 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
       _storage = prefsStorage;
     }
 
+    // Session flag must never survive process restarts.
+    await _storage.setRequestedThisSession(false);
+
     _config = config;
-    _ruleEngine = RuleEngine(_storage, rules);
+    final effectiveRules =
+        (rules == null || rules.isEmpty) ? defaultReviewRules() : rules;
+    _ruleEngine = RuleEngine(_storage, effectiveRules);
+    _usageTracker = UsageTracker(_storage);
 
     WidgetsBinding.instance.addObserver(this);
-
     _initialized = true;
 
     if (appVersion != null) {
@@ -172,19 +123,16 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     if (_config.autoTrackUsageTime == true) {
-      _startForegroundTracking();
+      _usageTracker!.startForegroundTracking();
     }
   }
 
   /// Register a callback handler for a [ReviewKitCallback] event.
-  ///
-  /// Multiple handlers can be registered for the same event.
   void on({
     required ReviewKitCallback callback,
     required void Function(dynamic) handler,
   }) {
-    _callbacks.putIfAbsent(callback, () => []);
-    _callbacks[callback]!.add(handler);
+    _callbacks.on(callback, handler);
   }
 
   /// Remove a previously registered callback handler.
@@ -194,56 +142,28 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
     required ReviewKitCallback callback,
     void Function(dynamic)? handler,
   }) {
-    if (handler != null) {
-      _callbacks[callback]?.remove(handler);
-    } else {
-      _callbacks.remove(callback);
-    }
+    _callbacks.off(callback, handler);
   }
 
-  void _emit(ReviewKitCallback callback, [dynamic data]) {
-    final handlers = _callbacks[callback];
-    if (handlers != null) {
-      for (final handler in handlers) {
-        handler(data);
-      }
+  void _debugLog(String message) {
+    if (_config.debugMode == true) {
+      debugPrint('[ReviewKit] $message');
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_config.autoTrackUsageTime != true) return;
+    final tracker = _usageTracker;
+    if (tracker == null) return;
 
     if (state == AppLifecycleState.resumed) {
-      _isInForeground = true;
-      _startForegroundTimer();
+      tracker.onResumed();
     } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      _isInForeground = false;
-      _flushForegroundTime();
-    }
-  }
-
-  void _startForegroundTracking() {
-    _isInForeground = true;
-    _startForegroundTimer();
-  }
-
-  void _startForegroundTimer() {
-    _foregroundTimer?.cancel();
-    _foregroundTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      _foregroundElapsed++;
-    });
-  }
-
-  void _flushForegroundTime() {
-    _foregroundTimer?.cancel();
-    _foregroundTimer = null;
-
-    if (_foregroundElapsed > 0) {
-      final total = _storage.getUsageDuration();
-      _storage.setUsageDuration(total + _foregroundElapsed);
-      _foregroundElapsed = 0;
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      tracker.onBackgrounded();
     }
   }
 
@@ -270,56 +190,31 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Start a new usage session.
-  ///
-  /// If [ReviewConfig.autoTrackSessions] is enabled, increments the session
-  /// counter. If [ReviewConfig.autoTrackUsageTime] is enabled, begins tracking
-  /// elapsed seconds until [endSession] is called.
-  ///
-  /// Note: When [autoTrackUsageTime] is enabled, foreground time is also
-  /// tracked automatically via [WidgetsBindingObserver] — both sources
-  /// contribute to the total usage duration.
   Future<void> startSession() async {
-    if (!_initialized || _sessionActive) return;
+    if (!_initialized || _usageTracker == null) return;
 
-    _sessionActive = true;
-    _sessionElapsed = 0;
-
-    if (_config.autoTrackSessions == true) {
-      final sessions = _storage.getSessionCount();
-      await _storage.setSessionCount(sessions + 1);
+    final started = await _usageTracker!.startSession(
+      trackSessionCount: _config.autoTrackSessions == true,
+      trackUsageTime: _config.autoTrackUsageTime == true,
+    );
+    if (started && _config.autoTrackSessions == true) {
       notifyListeners();
-    }
-
-    if (_config.autoTrackUsageTime == true && !_isInForeground) {
-      _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        _sessionElapsed++;
-      });
     }
   }
 
-  /// End the current usage session.
-  ///
-  /// Flushes elapsed usage time to persistent storage.
+  /// End the current usage session and flush usage time when enabled.
   Future<void> endSession() async {
-    if (!_sessionActive) return;
-
-    _sessionActive = false;
-    _sessionTimer?.cancel();
-    _sessionTimer = null;
-
-    if (_config.autoTrackUsageTime == true && _sessionElapsed > 0) {
-      final total = _storage.getUsageDuration();
-      await _storage.setUsageDuration(total + _sessionElapsed);
+    if (_usageTracker == null) return;
+    final before = _storage.getUsageDuration();
+    await _usageTracker!.endSession(
+      trackUsageTime: _config.autoTrackUsageTime == true,
+    );
+    if (_storage.getUsageDuration() != before) {
       notifyListeners();
     }
   }
 
-  /// Record a custom event.
-  ///
-  /// Events are stored persistently and can be used with [EventRule] to
-  /// require a minimum number of occurrences before review eligibility.
-  ///
-  /// Example: `trackEvent('purchase_made')`
+  /// Record a custom event (for [EventRule] thresholds).
   Future<void> trackEvent(String eventName) async {
     if (!_initialized) return;
     await _storage.incrementEvent(eventName);
@@ -327,10 +222,14 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Get all tracked custom events and their counts.
-  Map<String, int> getEvents() => _storage.getEvents();
+  Map<String, int> getEvents() {
+    if (!_initialized) return const {};
+    return _storage.getEvents();
+  }
 
   /// Reset a specific event counter to zero.
   Future<void> resetEvent(String eventName) async {
+    if (!_initialized) return;
     final events = _storage.getEvents();
     events.remove(eventName);
     await _storage.setEvents(events);
@@ -339,6 +238,7 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Manually increment the launch counter.
   Future<void> incrementLaunchCount() async {
+    if (!_initialized) return;
     final launches = _storage.getLaunchCount();
     await _storage.setLaunchCount(launches + 1);
     notifyListeners();
@@ -346,33 +246,23 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Manually increment the session counter.
   Future<void> incrementSessionCount() async {
+    if (!_initialized) return;
     final sessions = _storage.getSessionCount();
     await _storage.setSessionCount(sessions + 1);
     notifyListeners();
   }
 
   /// Run all eligibility rules against the current config and data.
-  ///
-  /// Returns a [ReviewEligibility] with passed/failed rules and reasons.
   ReviewEligibility checkEligibility() {
+    _ensureInitialized();
     _lastEligibility = _ruleEngine.checkEligibility(_config);
     notifyListeners();
     return _lastEligibility!;
   }
 
   /// Get a detailed [ReviewReason] explaining the current eligibility state.
-  ///
-  /// This is the primary way to surface diagnostic information to developers
-  /// about why a review was or was not requested.
-  ///
-  /// Example output:
-  /// ```
-  /// ❌ Not Eligible
-  /// Reason:
-  /// • Usage time: 3m / 10m
-  /// • App launches: 2/5
-  /// ```
   ReviewReason getEligibilityReason() {
+    _ensureInitialized();
     _lastReason = _ruleEngine.getEligibilityReason(_config);
     notifyListeners();
     return _lastReason!;
@@ -380,17 +270,9 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Attempt to request an in-app review, subject to all eligibility rules.
   ///
-  /// Returns `true` if the native review dialog was shown.
-  /// Returns `false` if:
-  /// - Any eligibility rule failed (use [getEligibilityReason] to see why)
-  /// - The native review API is unavailable
-  /// - A request is already in progress
-  ///
-  /// This method automatically:
-  /// 1. Evaluates all registered rules
-  /// 2. Checks native API availability
-  /// 3. Records the request date on success
-  /// 4. Fires appropriate callbacks
+  /// Returns `true` if the native review API was invoked successfully.
+  /// A `true` result means the OS API was called — stores may still suppress
+  /// the dialog due to quotas.
   Future<bool> maybeRequestReview() async {
     if (!_initialized || _isRequesting) return false;
 
@@ -398,17 +280,19 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
     if (!eligibility.eligible) {
       _lastReason = _ruleEngine.getEligibilityReason(_config);
-      _emit(ReviewKitCallback.ineligible, _lastReason);
-      _emit(ReviewKitCallback.reviewSkipped, _lastReason);
+      _debugLog('Ineligible:\n$_lastReason');
+      _callbacks.emit(ReviewKitCallback.ineligible, _lastReason);
+      _callbacks.emit(ReviewKitCallback.reviewSkipped, _lastReason);
       return false;
     }
 
-    _emit(ReviewKitCallback.eligible, eligibility);
+    _callbacks.emit(ReviewKitCallback.eligible, eligibility);
 
     final available = await _nativeService.isAvailable();
     if (!available) {
-      _emit(ReviewKitCallback.reviewUnavailable);
-      _emit(ReviewKitCallback.reviewSkipped);
+      _debugLog('Native review API unavailable');
+      _callbacks.emit(ReviewKitCallback.reviewUnavailable);
+      _callbacks.emit(ReviewKitCallback.reviewSkipped);
       return false;
     }
 
@@ -420,13 +304,15 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
       if (success) {
         await _storage.setLastReviewRequestDate(DateTime.now());
         await _storage.setRequestedThisSession(true);
-        _emit(ReviewKitCallback.reviewRequested);
+        _debugLog('Review API invoked');
+        _callbacks.emit(ReviewKitCallback.reviewRequested);
         return true;
-      } else {
-        _emit(ReviewKitCallback.reviewUnavailable);
-        _emit(ReviewKitCallback.reviewSkipped);
-        return false;
       }
+
+      _debugLog('Review API request failed');
+      _callbacks.emit(ReviewKitCallback.reviewUnavailable);
+      _callbacks.emit(ReviewKitCallback.reviewSkipped);
+      return false;
     } finally {
       _isRequesting = false;
       notifyListeners();
@@ -435,26 +321,18 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Open the platform's store listing page.
   ///
-  /// [iosAppId] is required for iOS to open the correct App Store page.
-  /// Records the redirect date for cooldown tracking.
-  Future<void> openStoreListing({
-    String androidAppId = '',
-    String iosAppId = '',
-  }) async {
-    await _nativeService.openStoreListing(
-      androidAppId: androidAppId,
-      iosAppId: iosAppId,
-    );
+  /// [appStoreId] is required on iOS. On Android the package name is used.
+  Future<void> openStoreListing({String appStoreId = ''}) async {
+    if (!_initialized) return;
+    await _nativeService.openStoreListing(appStoreId: appStoreId);
     await _storage.setLastStoreRedirectDate(DateTime.now());
-    _emit(ReviewKitCallback.storeOpened);
+    _callbacks.emit(ReviewKitCallback.storeOpened);
   }
 
   /// Get a complete snapshot of all tracked statistics.
   ReviewStatistics getStatistics() {
+    _ensureInitialized();
     final eligibility = checkEligibility();
-    final lastReview = _storage.getLastReviewRequestDate();
-    final cooldownActive = _isCooldownActive();
-    final cooldownRemaining = cooldownActive ? _getCooldownRemaining() : null;
 
     return ReviewStatistics(
       launchCount: _storage.getLaunchCount(),
@@ -463,41 +341,58 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
       eventTotals: Map.from(_storage.getEvents()),
       installDate: _storage.getInstallDate(),
       firstLaunchDate: _storage.getFirstLaunchDate(),
-      lastReviewRequestDate: lastReview,
+      lastReviewRequestDate: _storage.getLastReviewRequestDate(),
       lastStoreRedirectDate: _storage.getLastStoreRedirectDate(),
       lastAppUpdateDate: _storage.getLastAppUpdateDate(),
-      cooldownActive: cooldownActive,
-      cooldownRemainingDays: cooldownRemaining,
+      cooldownActive: _isCooldownActive(),
+      cooldownRemainingDays: _getCooldownRemaining(),
       isEligible: eligibility.eligible,
     );
   }
 
   bool _isCooldownActive() {
-    if (_config.cooldownDaysAfterReview == null) return false;
     final now = DateTime.now();
-    final lastReview = _storage.getLastReviewRequestDate();
-    if (lastReview != null) {
-      final daysSince = now.difference(lastReview).inDays;
-      if (daysSince < _config.cooldownDaysAfterReview!) return true;
+
+    if (_config.cooldownDaysAfterReview != null) {
+      final lastReview = _storage.getLastReviewRequestDate();
+      if (lastReview != null &&
+          now.difference(lastReview).inDays <
+              _config.cooldownDaysAfterReview!) {
+        return true;
+      }
     }
+
+    if (_config.cooldownDaysAfterStoreRedirect != null) {
+      final lastRedirect = _storage.getLastStoreRedirectDate();
+      if (lastRedirect != null &&
+          now.difference(lastRedirect).inDays <
+              _config.cooldownDaysAfterStoreRedirect!) {
+        return true;
+      }
+    }
+
+    if (_config.oneRequestPerSession == true &&
+        _storage.getRequestedThisSession()) {
+      return true;
+    }
+
     return false;
   }
 
   int? _getCooldownRemaining() {
     if (_config.cooldownDaysAfterReview == null) return null;
-    final now = DateTime.now();
     final lastReview = _storage.getLastReviewRequestDate();
-    if (lastReview != null) {
-      final daysSince = now.difference(lastReview).inDays;
-      final remaining = _config.cooldownDaysAfterReview! - daysSince;
-      if (remaining > 0) return remaining;
-    }
-    return null;
+    if (lastReview == null) return null;
+
+    final remaining = _config.cooldownDaysAfterReview! -
+        DateTime.now().difference(lastReview).inDays;
+    return remaining > 0 ? remaining : null;
   }
 
   /// Reset all counters, events, dates, and cooldowns.
   Future<void> resetAll() async {
-    _flushForegroundTime();
+    if (!_initialized) return;
+    _usageTracker?.flushForegroundTime();
     await _storage.resetAll();
     _lastEligibility = null;
     _lastReason = null;
@@ -506,31 +401,38 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Reset the launch counter to zero.
   Future<void> resetLaunches() async {
+    if (!_initialized) return;
     await _storage.setLaunchCount(0);
     notifyListeners();
   }
 
   /// Reset the session counter to zero.
   Future<void> resetSessions() async {
+    if (!_initialized) return;
     await _storage.setSessionCount(0);
     notifyListeners();
   }
 
   /// Reset the usage time counter to zero.
   Future<void> resetUsageTime() async {
+    if (!_initialized) return;
+    _usageTracker?.clearElapsed();
     await _storage.setUsageDuration(0);
     notifyListeners();
   }
 
   /// Reset all custom event counters.
   Future<void> resetEvents() async {
+    if (!_initialized) return;
     await _storage.resetEvents();
     notifyListeners();
   }
 
   /// Reset cooldowns so a review can be requested immediately.
   Future<void> resetCooldowns() async {
-    await _storage.setLastReviewRequestDate(DateTime(2000));
+    if (!_initialized) return;
+    await _storage.clearLastReviewRequestDate();
+    await _storage.clearLastStoreRedirectDate();
     await _storage.setRequestedThisSession(false);
     notifyListeners();
   }
@@ -539,27 +441,58 @@ class ReviewViewModel extends ChangeNotifier with WidgetsBindingObserver {
   Future<bool> isNativeReviewAvailable() => _nativeService.isAvailable();
 
   /// Update the configuration and optionally the rule set at runtime.
-  ///
-  /// [config] — the new [ReviewConfig]. [rules] — optional new rule list.
   void updateConfig(ReviewConfig config, {List<ReviewRule>? rules}) {
+    _ensureInitialized();
     final wasTracking = _config.autoTrackUsageTime == true;
     _config = config;
+
     if (rules != null) {
-      _ruleEngine = RuleEngine(_storage, rules);
+      final effectiveRules =
+          rules.isEmpty ? defaultReviewRules() : rules;
+      _ruleEngine = RuleEngine(_storage, effectiveRules);
     }
+
     if (wasTracking && config.autoTrackUsageTime != true) {
-      _flushForegroundTime();
+      _usageTracker?.flushForegroundTime();
     } else if (!wasTracking && config.autoTrackUsageTime == true) {
-      _startForegroundTracking();
+      _usageTracker?.startForegroundTracking();
     }
     notifyListeners();
   }
 
-  @override
-  void dispose() {
+  void _ensureInitialized() {
+    if (!_initialized) {
+      throw StateError(
+        'ReviewViewModel has not been initialized. '
+        'Call await ReviewViewModel.instance.init(...) first.',
+      );
+    }
+  }
+
+  Future<void> _tearDown() async {
     WidgetsBinding.instance.removeObserver(this);
-    _flushForegroundTime();
-    _sessionTimer?.cancel();
-    super.dispose();
+    _usageTracker?.dispose();
+    _usageTracker = null;
+    _isRequesting = false;
+    _lastEligibility = null;
+    _lastReason = null;
+    _callbacks.clear();
+    _initialized = false;
+  }
+
+  /// Releases lifecycle observers and timers without disposing the singleton.
+  Future<void> shutdown() async {
+    await _tearDown();
+  }
+
+  /// Fully resets the singleton for unit tests.
+  @visibleForTesting
+  Future<void> resetForTesting() async {
+    if (_initialized) {
+      try {
+        await _storage.resetAll();
+      } catch (_) {}
+    }
+    await _tearDown();
   }
 }

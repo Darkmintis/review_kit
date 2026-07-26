@@ -2,18 +2,6 @@ import 'package:flutter/material.dart';
 import '../viewmodels/review_viewmodel.dart';
 import '../models/review_statistics.dart';
 
-/// A debug/diagnostics screen for ReviewKit.
-///
-/// Displays real-time eligibility status, counters, custom events, date
-/// records, and provides action buttons to reset data. Useful during
-/// development and testing.
-///
-/// ```dart
-/// Navigator.push(
-///   context,
-///   MaterialPageRoute(builder: (_) => const ReviewDebugScreen()),
-/// );
-/// ```
 class ReviewDebugScreen extends StatefulWidget {
   const ReviewDebugScreen({super.key});
 
@@ -24,6 +12,7 @@ class ReviewDebugScreen extends StatefulWidget {
 class _ReviewDebugScreenState extends State<ReviewDebugScreen> {
   final _vm = ReviewViewModel.instance;
   ReviewStatistics? _stats;
+  String? _eligibilityReason;
 
   @override
   void initState() {
@@ -32,9 +21,24 @@ class _ReviewDebugScreenState extends State<ReviewDebugScreen> {
   }
 
   void _refresh() {
+    if (!_vm.initialized) {
+      setState(() {
+        _stats = null;
+        _eligibilityReason = 'ReviewKit not initialized';
+      });
+      return;
+    }
     setState(() {
+      _eligibilityReason = _vm.getEligibilityReason().toString();
       _stats = _vm.getStatistics();
     });
+  }
+
+  Future<void> _runAction(Future<void> Function() action) async {
+    try {
+      await action();
+    } catch (_) {}
+    if (mounted) _refresh();
   }
 
   @override
@@ -50,7 +54,12 @@ class _ReviewDebugScreenState extends State<ReviewDebugScreen> {
         ],
       ),
       body: _stats == null
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(
+              child: Text(
+                _eligibilityReason ?? 'Loading...',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            )
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -177,14 +186,8 @@ class _ReviewDebugScreenState extends State<ReviewDebugScreen> {
           children: [
             Text('Dates', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
-            _buildStatRow(
-              'Install Date',
-              _fmtDate(_stats!.installDate),
-            ),
-            _buildStatRow(
-              'First Launch',
-              _fmtDate(_stats!.firstLaunchDate),
-            ),
+            _buildStatRow('Install Date', _fmtDate(_stats!.installDate)),
+            _buildStatRow('First Launch', _fmtDate(_stats!.firstLaunchDate)),
             _buildStatRow(
               'Last Review Request',
               _fmtDate(_stats!.lastReviewRequestDate),
@@ -214,24 +217,23 @@ class _ReviewDebugScreenState extends State<ReviewDebugScreen> {
               children: [
                 ActionChip(
                   label: const Text('Reset All'),
-                  onPressed: () => _vm.resetAll().then((_) => _refresh()),
+                  onPressed: () => _runAction(_vm.resetAll),
                 ),
                 ActionChip(
                   label: const Text('Reset Launches'),
-                  onPressed: () => _vm.resetLaunches().then((_) => _refresh()),
+                  onPressed: () => _runAction(_vm.resetLaunches),
                 ),
                 ActionChip(
                   label: const Text('Reset Sessions'),
-                  onPressed: () => _vm.resetSessions().then((_) => _refresh()),
+                  onPressed: () => _runAction(_vm.resetSessions),
                 ),
                 ActionChip(
                   label: const Text('Reset Events'),
-                  onPressed: () => _vm.resetEvents().then((_) => _refresh()),
+                  onPressed: () => _runAction(_vm.resetEvents),
                 ),
                 ActionChip(
                   label: const Text('Reset Cooldowns'),
-                  onPressed: () =>
-                      _vm.resetCooldowns().then((_) => _refresh()),
+                  onPressed: () => _runAction(_vm.resetCooldowns),
                 ),
               ],
             ),
