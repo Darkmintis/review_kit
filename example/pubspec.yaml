@@ -1,17 +1,22 @@
 name: review_kit_example
-description: Example app for in_app_review_kit
+description: Example app demonstrating in_app_review_kit (ReviewKit).
 publish_to: none
-version: 1.0.0
+version: 1.0.0+1
 
 environment:
-  sdk: ">=3.0.0 <4.0.0"
-  flutter: ">=3.10.0"
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
 
 dependencies:
   flutter:
     sdk: flutter
   in_app_review_kit:
     path: ../
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
