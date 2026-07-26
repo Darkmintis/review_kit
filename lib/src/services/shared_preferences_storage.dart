@@ -20,13 +20,25 @@ class SharedPreferencesStorage implements ReviewStorage {
   static const _lastAppVersion = '${_prefix}last_app_version';
   static const _lastAppUpdateDate = '${_prefix}last_app_update_date';
   static const _events = '${_prefix}events';
-  static const _requestedThisSession = '${_prefix}requested_this_session';
+  // Legacy key — session flag must never persist across process restarts.
+  static const _legacyRequestedThisSession =
+      '${_prefix}requested_this_session';
 
   late SharedPreferences _prefs;
 
+  /// In-memory only: one-request-per-session must reset on every app start.
+  bool _requestedThisSession = false;
+
   /// Initialize the SharedPreferences instance. Must be called once before use.
+  ///
+  /// Also migrates away from the legacy persisted session flag so older
+  /// installs do not stay blocked forever after a single review request.
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
+    if (_prefs.containsKey(_legacyRequestedThisSession)) {
+      await _prefs.remove(_legacyRequestedThisSession);
+    }
+    _requestedThisSession = false;
   }
 
   @override
@@ -81,6 +93,9 @@ class SharedPreferencesStorage implements ReviewStorage {
       _prefs.setInt(_lastReviewDate, date.millisecondsSinceEpoch);
 
   @override
+  Future<void> clearLastReviewRequestDate() => _prefs.remove(_lastReviewDate);
+
+  @override
   DateTime? getLastStoreRedirectDate() {
     final millis = _prefs.getInt(_lastStoreRedirect);
     return millis != null ? DateTime.fromMillisecondsSinceEpoch(millis) : null;
@@ -89,6 +104,10 @@ class SharedPreferencesStorage implements ReviewStorage {
   @override
   Future<void> setLastStoreRedirectDate(DateTime date) =>
       _prefs.setInt(_lastStoreRedirect, date.millisecondsSinceEpoch);
+
+  @override
+  Future<void> clearLastStoreRedirectDate() =>
+      _prefs.remove(_lastStoreRedirect);
 
   @override
   String? getLastAppVersion() => _prefs.getString(_lastAppVersion);
@@ -108,12 +127,12 @@ class SharedPreferencesStorage implements ReviewStorage {
       _prefs.setInt(_lastAppUpdateDate, date.millisecondsSinceEpoch);
 
   @override
-  bool getRequestedThisSession() =>
-      _prefs.getBool(_requestedThisSession) ?? false;
+  bool getRequestedThisSession() => _requestedThisSession;
 
   @override
-  Future<void> setRequestedThisSession(bool value) =>
-      _prefs.setBool(_requestedThisSession, value);
+  Future<void> setRequestedThisSession(bool value) async {
+    _requestedThisSession = value;
+  }
 
   @override
   Map<String, int> getEvents() {
@@ -150,10 +169,11 @@ class SharedPreferencesStorage implements ReviewStorage {
       _lastAppVersion,
       _lastAppUpdateDate,
       _events,
-      _requestedThisSession,
+      _legacyRequestedThisSession,
     ];
     for (final key in keys) {
       await _prefs.remove(key);
     }
+    _requestedThisSession = false;
   }
 }

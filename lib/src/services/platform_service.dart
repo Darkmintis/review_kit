@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 /// Supported platforms for in-app reviews.
 enum ReviewPlatform {
@@ -8,17 +8,26 @@ enum ReviewPlatform {
   /// Apple App Store (iOS 10.3+).
   ios,
 
-  /// Unsupported platform.
+  /// Unsupported platform (web, desktop, etc.).
   unsupported,
 }
 
 /// Detects the current platform and determines review API availability.
+///
+/// Uses [defaultTargetPlatform] instead of `dart:io` so the package can be
+/// imported safely in multi-platform apps (including web).
 class PlatformService {
   /// The detected platform for the current device.
   ReviewPlatform get platform {
-    if (Platform.isAndroid) return ReviewPlatform.android;
-    if (Platform.isIOS) return ReviewPlatform.ios;
-    return ReviewPlatform.unsupported;
+    if (kIsWeb) return ReviewPlatform.unsupported;
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return ReviewPlatform.android;
+      case TargetPlatform.iOS:
+        return ReviewPlatform.ios;
+      default:
+        return ReviewPlatform.unsupported;
+    }
   }
 
   /// Whether the current platform supports in-app reviews.

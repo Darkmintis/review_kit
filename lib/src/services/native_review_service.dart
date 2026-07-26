@@ -23,8 +23,11 @@ class NativeReviewService {
 
   /// Attempts to show the native in-app review dialog.
   ///
-  /// Returns `true` if the review was successfully requested.
-  /// Returns `false` if the API is unavailable or throws.
+  /// Returns `true` if the native API was invoked successfully.
+  ///
+  /// **Important:** Google Play and the App Store may silently suppress the
+  /// dialog due to quota limits. A `true` result means the request was made,
+  /// not that the user necessarily saw a dialog.
   Future<bool> requestReview() async {
     try {
       if (await isAvailable()) {
@@ -39,16 +42,12 @@ class NativeReviewService {
 
   /// Opens the platform's store listing page for the app.
   ///
-  /// [iosAppId] is required for iOS to open the correct App Store page.
-  /// On Android, the Play Store listing is opened automatically.
-  Future<void> openStoreListing({
-    String androidAppId = '',
-    String iosAppId = '',
-  }) async {
+  /// [appStoreId] is required on iOS to open the correct App Store page.
+  /// On Android, the Play Store listing is opened from the app's package name.
+  Future<void> openStoreListing({String appStoreId = ''}) async {
     try {
       await _inAppReview.openStoreListing(
-        appStoreId: iosAppId,
-        microsoftStoreId: null,
+        appStoreId: appStoreId.isEmpty ? null : appStoreId,
       );
     } catch (_) {}
   }

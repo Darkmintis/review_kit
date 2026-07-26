@@ -70,11 +70,21 @@ class InMemoryStorage implements ReviewStorage {
   }
 
   @override
+  Future<void> clearLastReviewRequestDate() async {
+    _lastReviewRequestDate = null;
+  }
+
+  @override
   DateTime? getLastStoreRedirectDate() => _lastStoreRedirectDate;
 
   @override
   Future<void> setLastStoreRedirectDate(DateTime date) async {
     _lastStoreRedirectDate = date;
+  }
+
+  @override
+  Future<void> clearLastStoreRedirectDate() async {
+    _lastStoreRedirectDate = null;
   }
 
   @override
