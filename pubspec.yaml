@@ -1,14 +1,24 @@
 name: in_app_review_kit
-description: A complete Flutter solution for intelligently managing Google Play and App Store in-app reviews. Smart eligibility rules, event tracking, cooldowns, and debugging — with zero hardcoded defaults.
+description: >-
+  Intelligently manage Google Play and App Store in-app reviews in Flutter.
+  Fluent eligibility rules, event tracking, cooldowns, and a debug screen —
+  with zero hardcoded defaults.
 version: 1.0.0
-homepage: https://github.com/yourusername/in_app_review_kit
-repository: https://github.com/yourusername/in_app_review_kit
-issue_tracker: https://github.com/yourusername/in_app_review_kit/issues
-documentation: https://github.com/yourusername/in_app_review_kit#readme
+homepage: https://github.com/darkmintis/review_kit
+repository: https://github.com/darkmintis/review_kit
+issue_tracker: https://github.com/darkmintis/review_kit/issues
+documentation: https://github.com/darkmintis/review_kit#readme
+
+topics:
+  - in-app-review
+  - rating
+  - review
+  - play-store
+  - app-store
 
 environment:
-  sdk: ">=3.0.0 <4.0.0"
-  flutter: ">=3.10.0"
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
 
 dependencies:
   flutter:
@@ -19,6 +29,6 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 flutter:

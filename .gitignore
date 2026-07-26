@@ -1,11 +1,27 @@
+# Dart / Flutter
 .dart_tool/
 .packages
 .pub/
+.pub-cache/
 build/
 *.iml
 .idea/
 .vscode/
-*.lock
 *.log
 .flutter-plugins
 .flutter-plugins-dependencies
+
+# Locks — packages typically omit pubspec.lock from VCS
+# Keep example/pubspec.lock optional; ignore root lock for a library package
+/pubspec.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+
+# Misc
+*.g.dart
+*.freezed.dart
